@@ -4,7 +4,7 @@
 
 1. [ikd-Tree](https://github.com/hku-mars/ikd-Tree): A state-of-art dynamic KD-Tree for 3D kNN search.
 2. [R2LIVE](https://github.com/hku-mars/r2live): A high-precision LiDAR-inertial-Vision fusion work using FAST-LIO as LiDAR-inertial front-end.
-3. [LI_Init](https://github.com/hku-mars/LiDAR_IMU_Init): A robust, real-time LiDAR-IMU extrinsic initialization and synchronization package..
+3. [LI_Init](https://github.com/hku-mars/LiDAR_IMU_Init): A robust, real-time LiDAR-inertial initialization and synchronization package..
 4. [FAST-LIO-LOCALIZATION](https://github.com/HViktorTsoi/FAST_LIO_LOCALIZATION): The integration of FAST-LIO with **Re-localization** function module.
 5. [FAST-LIVO](https://github.com/hku-mars/FAST-LIVO) | [FAST-LIVO2](https://github.com/hku-mars/FAST-LIVO2): A state-of-art LiDAR-inertial-visual odometry (LIVO) system with high computational efficiency, robustness, and pixel-level accuracy.
 
@@ -16,6 +16,99 @@
 4. [Bubble Planner](https://arxiv.org/abs/2202.12177): Planning High-speed Smooth Quadrotor Trajectories using Receding Corridors.
 
 <!-- 10. [**FAST-LIVO**](https://github.com/hku-mars/FAST-LIVO): Fast and Tightly-coupled Sparse-Direct LiDAR-Inertial-Visual Odometry. -->
+
+## GPU Acceleration (Metal)
+
+This fork adds **optional GPU acceleration** via Apple Metal for the computational bottleneck in FAST-LIO2: the `h_share_model()` function, which performs per-point plane fitting, residual computation, and Jacobian construction every ESKF iteration.
+
+**Key design:** The GPU backend is entirely optional. On non-Apple platforms (Linux, ARM boards, etc.), the system automatically falls back to the CPU reference implementation with zero code changes. The Metal code is never compiled on non-macOS systems.
+
+### Architecture
+
+A `ComputeBackend` abstraction (`include/compute/compute_backend.h`) defines 7 GPU-amenable kernels:
+
+| Kernel | Operation | Description |
+|--------|-----------|-------------|
+| 1 | `batch_transform_points` | Body-to-world point transformation with LiDAR-IMU extrinsic |
+| 2 | `batch_plane_fit` | Per-point least-squares plane fitting (5 neighbors) |
+| 3 | `batch_compute_residuals` | Point-to-plane residual + validity scoring |
+| 4 | `batch_build_jacobian` | ESKF measurement Jacobian (Mx12) construction |
+| 5 | `compute_HTH` | H^T * H parallel reduction (Mx12 -> 12x12) |
+| 6 | `compute_HTh` | H^T * h parallel reduction (Mx12 + Mx1 -> 12x1) |
+| 7 | `batch_undistort_points` | IMU motion compensation per LiDAR point |
+
+Plus a **fused pipeline** (`fused_h_share_model`) that chains kernels 1-6 keeping data on the GPU.
+
+**Implementations:**
+- `include/compute/cpu_backend.h` — CPU reference using Eigen (always available)
+- `include/compute/metal_backend.mm` — Metal GPU backend (macOS with Metal-capable GPU)
+- `include/compute/metal/kernels.metal` — 7 Metal compute shaders
+
+### Performance (Apple M3 Pro)
+
+**Fused h_share_model pipeline** (the real-world target, end-to-end):
+
+| Points | CPU | Metal | Speedup |
+|--------|-----|-------|---------|
+| 1,000 | 0.41 ms | 0.24 ms | **1.8x** |
+| 5,000 | 2.1 ms | 0.51 ms | **4.1x** |
+| 10,000 | 4.1 ms | 0.76 ms | **5.4x** |
+| 50,000 | 20.5 ms | 2.8 ms | **7.3x** |
+| 100,000 | 41.1 ms | 5.5 ms | **7.4x** |
+
+**Isolated plane fitting** (the single biggest bottleneck kernel):
+
+| Points | CPU | Metal | Speedup |
+|--------|-----|-------|---------|
+| 10,000 | 3.7 ms | 9 us | **414x** |
+| 100,000 | 37 ms | 13 us | **2,866x** |
+| 500,000 | 186 ms | 22 us | **8,593x** |
+
+Validation shows **100% feature count agreement** and **HTH trace ratio of 1.000** between CPU and Metal backends at all tested sizes (1k-500k points).
+
+### Compatibility — Non-Metal Platforms
+
+**This will not affect builds on non-Metal systems.** The safety guarantees:
+
+1. **CMake gating:** Metal compilation is wrapped in `if(APPLE)` + `find_library(Metal)`. On Linux/ARM/Windows, the Metal code is never compiled.
+2. **Factory pattern:** `create_backend("cpu")` always works. `create_backend("metal")` returns `nullptr` on non-Apple systems. `create_default_backend()` returns Metal on macOS if available, CPU otherwise.
+3. **Header guards:** The CPU backend's factory functions are guarded by `#ifndef HAS_METAL`, which is only defined for Metal-linked targets. Non-Metal targets get the CPU-only factory automatically.
+4. **No new dependencies:** The Metal backend uses only Apple system frameworks (Metal.framework, Foundation.framework) that ship with macOS/Xcode.
+
+### Building the Test Suite (with Metal)
+
+On macOS with Xcode or Command Line Tools installed:
+
+```bash
+# Prerequisites: Xcode Command Line Tools (includes Metal compiler)
+xcode-select --install
+
+# Debug build (for testing)
+cmake -S test -B test/build
+cmake --build test/build -j$(sysctl -n hw.ncpu)
+
+# Release build (for benchmarks)
+cmake -S test -B test/build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build test/build-release -j$(sysctl -n hw.ncpu)
+
+# Run all tests (74 total)
+./test/build/test_so3_math           # 17 tests - SO(3) math operations
+./test/build/test_plane_estimation   #  6 tests - Plane fitting
+./test/build/test_ikd_tree           # 14 tests - ikd-Tree operations
+./test/build/test_compute_backend    # 26 tests - CPU compute backend
+./test/build/test_metal_backend      # 11 tests - Metal GPU backend
+
+# Run benchmarks (includes CPU vs Metal validation + timing)
+./test/build-release/bench_metal_backend
+```
+
+On Linux or other non-Apple platforms, the Metal test/benchmark targets are simply not generated by CMake. All other tests build and run normally.
+
+### Technical Notes
+
+- **Float precision on GPU, double on CPU:** Metal shaders use float32 for per-point operations (transform, plane fit, residual, Jacobian). The Jacobian matrix H is float on the GPU and converted to double during readback. HTH/HTh reductions accumulate in float on the GPU with threadgroup partial sums, then the final reduction across threadgroups happens on the CPU in double.
+- **Cholesky solver for plane fitting:** The Metal plane fitting kernel uses Cholesky decomposition of the 3x3 normal equations matrix (A^T*A) with coordinate pre-scaling for numerical stability. This matches the CPU's `colPivHouseholderQr` results at 100% validity agreement.
+- **Zero-copy on Apple Silicon:** The Metal backend uses shared memory (`MTLResourceStorageModeShared`), enabling zero-copy buffer access between CPU and GPU on unified memory architectures.
 
 ## FAST-LIO
 **FAST-LIO** (Fast LiDAR-Inertial Odometry) is a computationally efficient and robust LiDAR-inertial odometry package. It fuses LiDAR feature points with IMU data using a tightly-coupled iterated extended Kalman filter to allow robust navigation in fast-motion, noisy or cluttered environments where degeneration occurs. Our package address many key issues:
