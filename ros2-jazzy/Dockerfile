@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-rviz2 \
         ros-jazzy-visualization-msgs \
         ros-jazzy-rosbag2-storage-mcap \
+        ros-jazzy-foxglove-bridge \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------

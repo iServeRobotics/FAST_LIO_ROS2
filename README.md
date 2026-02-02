@@ -5,7 +5,7 @@ ROS2 port of the [FAST_LIO](https://github.com/hku-mars/FAST_LIO) `cuda+metal` b
 ## Repository Structure
 
 ```
-├── run_humble.sh              Run script (bag selection, GPU, rviz)
+├── run_humble.sh              Run script (bag selection, GPU, visualization)
 ├── ros2-humble/
 │   ├── Dockerfile             CPU-only image (~3 GB)
 │   └── Dockerfile.cuda        CUDA GPU image (~7 GB)
@@ -29,29 +29,61 @@ docker build -f ros2-humble/Dockerfile -t fast_lio:humble .
 docker build -f ros2-humble/Dockerfile.cuda -t fast_lio:humble-cuda .
 ```
 
-### Run with rosbag
+### Run with rosbag replay
 
 ```bash
-# Interactive bag selection, with rviz2
+# Interactive bag selection (Foxglove visualization)
 ./run_humble.sh
 
 # With CUDA GPU acceleration
 ./run_humble.sh --gpu
 
-# Headless (no rviz)
-./run_humble.sh --no-rviz
+# With rviz2 GUI (requires X11)
+./run_humble.sh --rviz
 
 # Direct path to a bag
 ./run_humble.sh ~/path/to/bag_directory
 ./run_humble.sh --gpu ~/path/to/bag_directory
 ```
 
+### Run with live LiDAR
+
+```bash
+# Live with Mid-360 (default)
+./run_humble.sh --live
+
+# Live with specific LiDAR config
+./run_humble.sh --live --config avia
+./run_humble.sh --live --config velodyne
+
+# Live with CUDA
+./run_humble.sh --live --gpu
+```
+
+### Visualization
+
+**Foxglove Studio** (default, no extra setup):
+- Foxglove Bridge starts automatically on `ws://localhost:8765`
+- Open [Foxglove Studio](https://foxglove.dev/) and connect to `ws://localhost:8765`
+
+**rviz2** (optional, requires X11):
+- Add `--rviz` to enable the rviz2 GUI window
+
+### Flags
+
+| Flag | Description |
+|---|---|
+| `--gpu` | Use CUDA image (`fast_lio:humble-cuda`) with `--gpus all` |
+| `--rviz` | Enable rviz2 GUI (requires X11 display) |
+| `--live` | Live LiDAR mode instead of bag replay |
+| `--config <name>` | LiDAR config: `mid360` (default), `avia`, `horizon`, `velodyne`, `ouster64`, `marsim` |
+
 The run script automatically:
+- Starts Foxglove Bridge for web-based visualization
 - Lists available ROS2 bag directories (MCAP format)
 - Detects LiDAR/IMU topic names from bag metadata
 - Remaps topics if they don't match the default config
-- Sets up X11 forwarding for rviz2
-- Passes `--gpus all` when using `--gpu`
+- Sets `use_sim_time:=true` for replay, `false` for live
 
 ### Run manually
 
@@ -76,7 +108,7 @@ docker run -it --rm --net=host --gpus all fast_lio:humble-cuda \
 | `mapping_ouster64.launch.py` | Ouster OS2-64 |
 | `mapping_marsim.launch.py` | MARSIM simulator |
 
-Each launch file accepts `rviz:=true/false` (default: `true`).
+Each launch file accepts `rviz:=true/false` (default: `true`) and `use_sim_time:=true/false` (default: `false`).
 
 ## Performance (CPU vs CUDA)
 
@@ -92,7 +124,7 @@ Tested on a 32-core machine with NVIDIA GPU:
 
 - Docker
 - For CUDA: NVIDIA driver + [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- For rviz2: X11 display server
+- For visualization: [Foxglove Studio](https://foxglove.dev/) (recommended) or X11 for rviz2
 
 ## Acknowledgements
 

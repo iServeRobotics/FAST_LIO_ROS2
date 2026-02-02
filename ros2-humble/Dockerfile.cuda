@@ -54,6 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rviz2 \
         ros-humble-visualization-msgs \
         ros-humble-rosbag2-storage-mcap \
+        ros-humble-foxglove-bridge \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------

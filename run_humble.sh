@@ -2,18 +2,21 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # run_humble.sh — Run FAST_LIO (Humble) with rosbag replay or live LiDAR.
 #
+# Foxglove Bridge starts by default on ws://localhost:8765.
+# Open Foxglove Studio and connect to visualize.
+#
 # Usage:
 #   ./run_humble.sh                          # replay mode, interactive bag selection
 #   ./run_humble.sh --gpu                    # replay + CUDA
-#   ./run_humble.sh --live                   # live LiDAR (subscribes to real topics)
+#   ./run_humble.sh --rviz                   # replay + rviz2 GUI
+#   ./run_humble.sh --live                   # live LiDAR
 #   ./run_humble.sh --live --gpu             # live + CUDA
-#   ./run_humble.sh --no-rviz <bag_dir>      # replay, headless
 #   ./run_humble.sh --live --config avia     # live with specific LiDAR config
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 DATA_DIR="${HOME}/Downloads/data"
-USE_RVIZ=true
+USE_RVIZ=false
 USE_GPU=false
 LIVE_MODE=false
 CONFIG="mid360"
@@ -22,7 +25,7 @@ CONFIG="mid360"
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --no-rviz) USE_RVIZ=false; shift ;;
+        --rviz)    USE_RVIZ=true; shift ;;
         --gpu)     USE_GPU=true; shift ;;
         --live)    LIVE_MODE=true; shift ;;
         --config)  CONFIG="$2"; shift 2 ;;
@@ -75,6 +78,7 @@ if [[ "$LIVE_MODE" == true ]]; then
     echo "Config:       $CONFIG ($LAUNCH_FILE)"
     echo "GPU:          $( [[ "$USE_GPU" == true ]] && echo "enabled (CUDA)" || echo "disabled" )"
     echo "rviz2:        $( [[ "$USE_RVIZ" == true ]] && echo "enabled" || echo "disabled" )"
+    echo "Foxglove:     ws://localhost:8765"
     echo "Image:        $IMAGE"
     echo ""
     echo "Launching FAST_LIO (live) …"
@@ -82,7 +86,10 @@ if [[ "$LIVE_MODE" == true ]]; then
 
     docker run "${DOCKER_ARGS[@]}" \
         "$IMAGE" \
-        ros2 launch fast_lio "$LAUNCH_FILE" rviz:="$RVIZ_FLAG" use_sim_time:=false
+        bash -c "
+            ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 &
+            ros2 launch fast_lio $LAUNCH_FILE rviz:=$RVIZ_FLAG use_sim_time:=false
+        "
 
     exit 0
 fi
@@ -156,7 +163,8 @@ CONTAINER_BAG="/data/$BAG_NAME"
 DOCKER_ARGS+=(-v "$BAG_DIR":"$CONTAINER_BAG":ro)
 
 echo "GPU:          $( [[ "$USE_GPU" == true ]] && echo "enabled (CUDA)" || echo "disabled" )"
-echo "rviz2:        $( [[ "$USE_RVIZ" == true ]] && echo "enabled" || echo "disabled" )"
+echo "rviz2:        $( [[ "$USE_RVIZ" == true ]] && echo "enabled" || echo "disabled (use --rviz to enable)" )"
+echo "Foxglove:     ws://localhost:8765"
 echo "Image:        $IMAGE"
 echo ""
 echo "Launching FAST_LIO + rosbag playback …"
@@ -165,6 +173,7 @@ echo "────────────────────────�
 docker run "${DOCKER_ARGS[@]}" \
     "$IMAGE" \
     bash -c "
+        ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 &
         ros2 launch fast_lio $LAUNCH_FILE rviz:=$RVIZ_FLAG use_sim_time:=true ${REMAP_ARGS[*]:+${REMAP_ARGS[*]}} &
         FAST_LIO_PID=\$!
 
