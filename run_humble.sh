@@ -11,7 +11,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-DATA_DIR="${HOME}/Downloads/data/Aggressive"
+DATA_DIR="${HOME}/Downloads/data"
 USE_RVIZ=true
 USE_GPU=false
 
