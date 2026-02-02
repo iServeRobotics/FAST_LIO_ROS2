@@ -1,27 +1,32 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# run_humble.sh — Run FAST_LIO (Humble) on an MCAP rosbag from the
-#                 Aggressive dataset.
+# run_humble.sh — Run FAST_LIO (Humble) with rosbag replay or live LiDAR.
 #
 # Usage:
-#   ./run_humble.sh                          # interactive, with rviz, CPU
-#   ./run_humble.sh --gpu                    # interactive, with rviz, CUDA
-#   ./run_humble.sh --no-rviz <bag_dir>      # direct path, headless
-#   ./run_humble.sh --gpu --no-rviz          # headless + CUDA
+#   ./run_humble.sh                          # replay mode, interactive bag selection
+#   ./run_humble.sh --gpu                    # replay + CUDA
+#   ./run_humble.sh --live                   # live LiDAR (subscribes to real topics)
+#   ./run_humble.sh --live --gpu             # live + CUDA
+#   ./run_humble.sh --no-rviz <bag_dir>      # replay, headless
+#   ./run_humble.sh --live --config avia     # live with specific LiDAR config
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 DATA_DIR="${HOME}/Downloads/data"
 USE_RVIZ=true
 USE_GPU=false
+LIVE_MODE=false
+CONFIG="mid360"
 
 # ── Parse flags ──────────────────────────────────────────────────────────────
 POSITIONAL=()
-for arg in "$@"; do
-    case "$arg" in
-        --no-rviz) USE_RVIZ=false ;;
-        --gpu)     USE_GPU=true ;;
-        *)         POSITIONAL+=("$arg") ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-rviz) USE_RVIZ=false; shift ;;
+        --gpu)     USE_GPU=true; shift ;;
+        --live)    LIVE_MODE=true; shift ;;
+        --config)  CONFIG="$2"; shift 2 ;;
+        *)         POSITIONAL+=("$1"); shift ;;
     esac
 done
 set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
@@ -33,12 +38,63 @@ else
     IMAGE="fast_lio:humble"
 fi
 
-# ── Bag selection ────────────────────────────────────────────────────────────
+# Validate config name
+LAUNCH_FILE="mapping_${CONFIG}.launch.py"
+
+# ── Docker run args (common) ────────────────────────────────────────────────
+DOCKER_ARGS=(
+    -it --rm
+    --net=host
+)
+
+# GPU passthrough
+if [[ "$USE_GPU" == true ]]; then
+    DOCKER_ARGS+=(--gpus all)
+fi
+
+# rviz / X11
+RVIZ_FLAG="false"
+if [[ "$USE_RVIZ" == true ]]; then
+    RVIZ_FLAG="true"
+    xhost +local:docker 2>/dev/null || true
+    DOCKER_ARGS+=(
+        -e DISPLAY="${DISPLAY}"
+        -v /tmp/.X11-unix:/tmp/.X11-unix:rw
+    )
+    if [[ -e /dev/dri ]]; then
+        DOCKER_ARGS+=(--device /dev/dri:/dev/dri)
+    fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE MODE
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ "$LIVE_MODE" == true ]]; then
+    echo ""
+    echo "Mode:         LIVE"
+    echo "Config:       $CONFIG ($LAUNCH_FILE)"
+    echo "GPU:          $( [[ "$USE_GPU" == true ]] && echo "enabled (CUDA)" || echo "disabled" )"
+    echo "rviz2:        $( [[ "$USE_RVIZ" == true ]] && echo "enabled" || echo "disabled" )"
+    echo "Image:        $IMAGE"
+    echo ""
+    echo "Launching FAST_LIO (live) …"
+    echo "───────────────────────────────────────────────────────────────────────"
+
+    docker run "${DOCKER_ARGS[@]}" \
+        "$IMAGE" \
+        ros2 launch fast_lio "$LAUNCH_FILE" rviz:="$RVIZ_FLAG"
+
+    exit 0
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REPLAY MODE
+# ─────────────────────────────────────────────────────────────────────────────
 if [[ $# -ge 1 ]]; then
     BAG_DIR="$1"
 else
     # Collect valid bag directories (must contain metadata.yaml)
-    mapfile -t bags < <(find "$DATA_DIR" -maxdepth 2 -name metadata.yaml -printf '%h\n' | sort)
+    mapfile -t bags < <(find "$DATA_DIR" -maxdepth 3 -name metadata.yaml -printf '%h\n' | sort)
 
     if [[ ${#bags[@]} -eq 0 ]]; then
         echo "No ROS2 bag directories found under $DATA_DIR"
@@ -48,8 +104,9 @@ else
     echo "Available rosbags:"
     echo "─────────────────────────────────────────"
     for i in "${!bags[@]}"; do
-        name=$(basename "${bags[$i]}")
-        printf "  [%d] %s\n" "$((i + 1))" "$name"
+        # Show path relative to DATA_DIR for clarity
+        relpath="${bags[$i]#"$DATA_DIR/"}"
+        printf "  [%d] %s\n" "$((i + 1))" "$relpath"
     done
     echo "─────────────────────────────────────────"
 
@@ -68,7 +125,8 @@ fi
 
 BAG_NAME=$(basename "$BAG_DIR")
 echo ""
-echo "Selected bag: $BAG_NAME"
+echo "Mode:         REPLAY"
+echo "Bag:          $BAG_NAME"
 echo "Path:         $BAG_DIR"
 
 # ── Detect topics from metadata.yaml ────────────────────────────────────────
@@ -80,7 +138,7 @@ IMU_TOPIC=$(grep -B1 'type: sensor_msgs/msg/Imu' "$BAG_DIR/metadata.yaml" \
 echo "Lidar topic:  ${LIDAR_TOPIC:-<not found>}"
 echo "IMU topic:    ${IMU_TOPIC:-<not found>}"
 
-# The mid360 config expects /livox/lidar and /livox/imu.
+# The config expects /livox/lidar and /livox/imu.
 # Build remapping args if the bag uses different topic names.
 REMAP_ARGS=()
 if [[ -n "$LIDAR_TOPIC" && "$LIDAR_TOPIC" != "/livox/lidar" ]]; then
@@ -93,39 +151,12 @@ if [[ -n "$IMU_TOPIC" && "$IMU_TOPIC" != "/livox/imu" ]]; then
     REMAP_ARGS+=("-r" "/livox/imu:=$IMU_TOPIC")
 fi
 
-# ── Docker run args ──────────────────────────────────────────────────────────
+# Mount bag directory
 CONTAINER_BAG="/data/$BAG_NAME"
-DOCKER_ARGS=(
-    -it --rm
-    --net=host
-    -v "$BAG_DIR":"$CONTAINER_BAG":ro
-)
+DOCKER_ARGS+=(-v "$BAG_DIR":"$CONTAINER_BAG":ro)
 
-# GPU passthrough
-if [[ "$USE_GPU" == true ]]; then
-    DOCKER_ARGS+=(--gpus all)
-    echo "GPU:          enabled (CUDA)"
-else
-    echo "GPU:          disabled (use --gpu to enable)"
-fi
-
-# rviz / X11
-RVIZ_FLAG="false"
-if [[ "$USE_RVIZ" == true ]]; then
-    RVIZ_FLAG="true"
-    xhost +local:docker 2>/dev/null || true
-    DOCKER_ARGS+=(
-        -e DISPLAY="${DISPLAY}"
-        -v /tmp/.X11-unix:/tmp/.X11-unix:rw
-    )
-    if [[ -e /dev/dri ]]; then
-        DOCKER_ARGS+=(--device /dev/dri:/dev/dri)
-    fi
-    echo "rviz2:        enabled"
-else
-    echo "rviz2:        disabled (use without --no-rviz to enable)"
-fi
-
+echo "GPU:          $( [[ "$USE_GPU" == true ]] && echo "enabled (CUDA)" || echo "disabled" )"
+echo "rviz2:        $( [[ "$USE_RVIZ" == true ]] && echo "enabled" || echo "disabled" )"
 echo "Image:        $IMAGE"
 echo ""
 echo "Launching FAST_LIO + rosbag playback …"
@@ -134,7 +165,7 @@ echo "────────────────────────�
 docker run "${DOCKER_ARGS[@]}" \
     "$IMAGE" \
     bash -c "
-        ros2 launch fast_lio mapping_mid360.launch.py rviz:=$RVIZ_FLAG ${REMAP_ARGS[*]:+${REMAP_ARGS[*]}} &
+        ros2 launch fast_lio $LAUNCH_FILE rviz:=$RVIZ_FLAG ${REMAP_ARGS[*]:+${REMAP_ARGS[*]}} &
         FAST_LIO_PID=\$!
 
         # Give FAST_LIO a moment to start up
