@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(fast_lio_tests CXX OBJCXX)
+project(fast_lio_tests CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,7 @@ if(APPLE)
   find_library(FOUNDATION_FRAMEWORK Foundation)
   if(METAL_FRAMEWORK)
     set(HAS_METAL ON)
+    enable_language(OBJCXX)
 
     set(METAL_SHADER_SRC "${FAST_LIO_ROOT}/include/compute/metal/kernels.metal")
     set(METAL_AIR "${CMAKE_CURRENT_BINARY_DIR}/kernels.air")
