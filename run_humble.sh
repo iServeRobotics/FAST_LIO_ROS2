@@ -82,7 +82,7 @@ if [[ "$LIVE_MODE" == true ]]; then
 
     docker run "${DOCKER_ARGS[@]}" \
         "$IMAGE" \
-        ros2 launch fast_lio "$LAUNCH_FILE" rviz:="$RVIZ_FLAG"
+        ros2 launch fast_lio "$LAUNCH_FILE" rviz:="$RVIZ_FLAG" use_sim_time:=false
 
     exit 0
 fi
@@ -165,7 +165,7 @@ echo "────────────────────────�
 docker run "${DOCKER_ARGS[@]}" \
     "$IMAGE" \
     bash -c "
-        ros2 launch fast_lio $LAUNCH_FILE rviz:=$RVIZ_FLAG ${REMAP_ARGS[*]:+${REMAP_ARGS[*]}} &
+        ros2 launch fast_lio $LAUNCH_FILE rviz:=$RVIZ_FLAG use_sim_time:=true ${REMAP_ARGS[*]:+${REMAP_ARGS[*]}} &
         FAST_LIO_PID=\$!
 
         # Give FAST_LIO a moment to start up

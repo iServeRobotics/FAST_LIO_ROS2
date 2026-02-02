@@ -12,8 +12,11 @@ def generate_launch_description():
     config_file = os.path.join(package_share, 'config', 'mid360.yaml')
     rviz_config = os.path.join(package_share, 'rviz_cfg', 'loam_livox.rviz')
 
+    use_sim_time = LaunchConfiguration('use_sim_time')
+
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('use_sim_time', default_value='false'),
 
         Node(
             package='fast_lio',
@@ -23,6 +26,7 @@ def generate_launch_description():
             parameters=[
                 config_file,
                 {
+                    'use_sim_time': use_sim_time,
                     'feature_extract_enable': False,
                     'point_filter_num': 3,
                     'max_iteration': 3,
@@ -40,6 +44,7 @@ def generate_launch_description():
             executable='rviz2',
             name='rviz2',
             arguments=['-d', rviz_config],
+            parameters=[{'use_sim_time': use_sim_time}],
             prefix='nice',
         ),
     ])
